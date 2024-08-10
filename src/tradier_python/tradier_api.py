@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from urllib.parse import urljoin
+from typing import Literal
 
 import requests
 
@@ -11,10 +12,10 @@ class TradierAPI:
     Tradier-python is a python client for interacting with the Tradier API.
     """
 
-    def __init__(self, token, default_account_id=None, endpoint=None):
+    def __init__(self, token, default_account_id=None, endpoint : Optional[Literal['live', 'sandbox']]=None):
 
         self.default_account_id = default_account_id
-        self.endpoint = endpoint if endpoint else SANDBOX_ENDPOINT
+        self.endpoint = BROKERAGE_ENDPOINT if endpoint == 'live' else SANDBOX_ENDPOINT
         self.session = requests.Session()
         self.session.headers.update(
             {
