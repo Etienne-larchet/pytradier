@@ -1,6 +1,6 @@
-# Tradier-Python
+# pytradier
 
-Tradier-python is a python client for interacting with the Tradier API.
+pytradier is a forked version of tradier-python (0.1.4), that is no longer maintained by its owner. It is a python client for interacting with the Tradier API.
 
 
 ## Getting Started
@@ -11,23 +11,24 @@ The client also takes an optional default_account_id which can make it easier to
 
 The default endpoint is the sandbox. You will need to set the endpoint to the brokerage endpoint for live use. 
 
-Reference documentation for the API can be found here: 
+Reference documentation for the API can be found here:
 
 https://documentation.tradier.com/brokerage-api/overview/market-data
 
+
 ### Installing
 
-pip install tradier-python
+pip install pytradier
 
-### Exmple
+### Exemple
 
 ```
 import os
 
-from tradier_python import TradierAPI
+from pytradier import TradierAPI
 
-token = os.environ["TRADIER_TOKEN"]
-account_id = os.environ["TRADIER_ACCOUNT_ID"]
+token = os.environ["TRADIER_TOKEN_SANDBOX"]
+account_id = os.environ["TRADIER_ACCOUNT_ID1"]
 t = TradierAPI(token=token, default_account_id=account_id)
 
 profile = t.get_profile()
@@ -37,14 +38,6 @@ print(profile)
 
 ## Version History
 
-* 0.1.4
-    * Fork in dev: input and output (ie: pandas for output)
-* 0.1.3
-    * Include tags by default when getting orders
-* 0.1.2
-    * Export models from the package
-* 0.1.1
-    * Bug fixes
 * 0.1.0
     * Initial release
 

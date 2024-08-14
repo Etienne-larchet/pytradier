@@ -1,10 +1,13 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from urllib.parse import urljoin
 from typing import Literal
+from urllib.parse import urljoin
 
+import pandas as pd
 import requests
+from tqdm import tqdm
 
-from tradier_python.models import *
+from .models import *
 
 
 class TradierAPI:
@@ -12,10 +15,15 @@ class TradierAPI:
     Tradier-python is a python client for interacting with the Tradier API.
     """
 
-    def __init__(self, token, default_account_id=None, endpoint : Optional[Literal['live', 'sandbox']]=None):
+    def __init__(
+        self,
+        token,
+        default_account_id=None,
+        endpoint: Optional[Literal["live", "sandbox"]] = None,
+    ):
 
         self.default_account_id = default_account_id
-        self.endpoint = BROKERAGE_ENDPOINT if endpoint == 'live' else SANDBOX_ENDPOINT
+        self.endpoint = BROKERAGE_ENDPOINT if endpoint == "live" else SANDBOX_ENDPOINT
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -380,17 +388,96 @@ class TradierAPI:
         res = OrderAPIResponse(**data)
         return res.order
 
-    def get_quotes(self, symbols: str, greeks: bool = False) -> List[Quote]:
+    def get_quotes(
+        self,
+        symbols: str | List[str],
+        greeks: bool = False,
+        output_format: Literal["df", "list"] = "list",
+    ) -> List[Quote] | pd.DataFrame:
         """
         Get a list of symbols using a keyword lookup on the symbols description. Results are in descending order by
         average volume of the security. This can be used for simple search functions.
         """
         url = "/v1/markets/quotes"
+
+        if isinstance(symbols, list):
+            symbols = ",".join(symbols)
         params = {"symbols": symbols, "greeks": greeks}
 
         data = self.get(url, params)
-        res = MarketsAPIResponse(**ensure_list(data, "quotes"))
-        return res.quotes.quotes
+        if output_format == "df":
+            output = pd.DataFrame(data["quotes"]["quote"]).T
+            output.columns = list(output.loc["symbol"])
+            output = output.drop("symbol")
+        else:
+            res = MarketsAPIResponse(**ensure_list(data, "quotes"))
+            output = res.quotes.quotes
+        return output
+
+    def get_historical_quotes(
+        self,
+        symbols: str | List[str],
+        interval: Literal["daily", "weekly", "monthly", None] = None,
+        start: date = None,
+        end: date = None,
+        output_format: Literal["df", "dict", "cls"] = "list",
+    ) -> List[Quote] | pd.DataFrame:
+        """
+        Get historical pricing for securities. This data will usually cover the entire lifetime of the companies if
+        sending reasonable start/end times. You can fetch historical pricing for options by passing the OCC option
+        symbol (ex. AAPL220617C00270000) as the symbol.
+
+        Notes: Historical data may not be dividend adjusted as this relies on the exchanges to report/adjust it
+        properly. Historical options data is not available for expired options.
+        """
+        url = "/v1/markets/history"
+        args = {
+            "path": url,
+            "params": {"interval": interval, "start": start, "end": end},
+        }
+
+        if not isinstance(symbols, list):
+            args["params"]["symbol"] = symbols
+            symbols = [symbols]
+            data = self.get(**args)
+            res = {symbols[0]: MarketsAPIResponse(**data)}
+        else:
+            args_list = [
+                {**args, "params": {**args["params"], "symbol": symbol}}
+                for symbol in symbols
+            ]
+            pool = [
+                Threads.Function(instance=self.get, args=args) for args in args_list
+            ]
+            data = Threads.multi_tasks(pool)
+            res = {
+                symbols[id]: MarketsAPIResponse(**value) for id, value in data.items()
+            }
+
+        if output_format == "cls":
+            return res
+        else:
+            output_dict = {
+                symbol: (
+                    res[symbol].model_dump()["history"]["day"]
+                    if res[symbol].history
+                    else None
+                )
+                for symbol in symbols
+            }
+            if output_format == "dict":
+                return output_dict
+            else:
+                dfs = []
+                for ticker, records in output_dict.items():
+                    if not records:
+                        continue
+                    df = pd.DataFrame(records)
+                    df.set_index("date", inplace=True)
+                    df.columns = pd.MultiIndex.from_product([[ticker], df.columns])
+                    dfs.append(df)
+                output_df = pd.concat(dfs, axis=1)
+                return output_df
 
     def get_option_chains(
         self, symbol: str, expiration: date, greeks: bool = False
@@ -456,24 +543,6 @@ class TradierAPI:
         data = self.get(url, params)
         res = MarketsAPIResponse(**data)
         return res.symbols
-
-    def get_historical_quotes(
-        self, symbol: str, interval: str = None, start: date = None, end: date = None
-    ) -> List[HistoricQuote]:
-        """
-        Get historical pricing for a security. This data will usually cover the entire lifetime of the company if
-        sending reasonable start/end times. You can fetch historical pricing for options by passing the OCC option
-        symbol (ex. AAPL220617C00270000) as the symbol.
-
-        Notes: Historical data may not be dividend adjusted as this relies on the exchanges to report/adjust it
-        properly. Historical options data is not available for expired options.
-        """
-        url = "/v1/markets/history"
-        params = {"symbol": symbol, "interval": interval, "start": start, "end": end}
-
-        data = self.get(url, params)
-        res = MarketsAPIResponse(**data)
-        return res.history.day
 
     def get_time_and_sales(
         self,
@@ -564,6 +633,49 @@ class TradierAPI:
             return res.securities.security
         else:
             return []
+
+
+class Threads:
+    class Function(BaseModel):
+        instance: Any
+        args: dict = {}
+        kwargs: dict = {}
+
+    @staticmethod
+    def _handle_future(future, results, futures):
+        try:
+            index = futures[future]
+            results[index] = future.result()
+        except Exception as e:
+            print(f"\nTask n°{index} generated an exception: {e}")
+
+    @staticmethod
+    def multi_tasks(functions: List["Threads.Function"]) -> List[Any]:
+        results = {}
+        with ThreadPoolExecutor() as executor:
+            try:
+                futures = {
+                    executor.submit(function.instance, **function.args): id
+                    for id, function in enumerate(functions)
+                }
+                progress_bar = tqdm(
+                    total=len(functions),
+                    desc="Completed tasks",
+                    unit="task",
+                    ascii=True,
+                )
+
+                for future in as_completed(futures):
+                    Threads._handle_future(future, results, futures)
+                    progress_bar.update(1)
+
+                progress_bar.close()
+                return results
+            except KeyboardInterrupt:
+                for future in futures.keys():
+                    future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise KeyboardInterrupt
 
 
 @dataclass

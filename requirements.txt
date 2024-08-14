@@ -1,11 +1,14 @@
+pydantic
+tqdm
+pandas
+
+pytest
+pytest-cov
+build
+twine
 tox
 black
 isort
 pre-commit
-pydantic
-pytest
-pytest-cov
-pytest-dotenv
-build
-twine
+
 -e .
